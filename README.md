@@ -1,51 +1,22 @@
-#####################################################################
-# CS:APP Malloc Lab
-# Handout files for students
-#
-# Copyright (c) 2002, R. Bryant and D. O'Hallaron, All rights reserved.
-# May not be used, modified, or copied without permission.
-#
-######################################################################
+################
+CS:APP Shell Lab
+################
 
-***********
-Main Files:
-***********
+Files:
 
-mm.{c,h}	
-	Your solution malloc package. mm.c is the file that you
-	will be handing in, and is the only file you should modify.
+Makefile	# Compiles your shell program and runs the tests
+README		# This file
+tsh.c		# The shell program that you will write and hand in
+tshref		# The reference shell binary.
 
-mdriver.c	
-	The malloc driver that tests your mm.c file
+# The remaining files are used to test your shell
+sdriver.pl	# The trace-driven shell driver
+trace*.txt	# The 15 trace files that control the shell driver
+tshref.out 	# Example output of the reference shell on all 15 traces
 
-short{1,2}-bal.rep
-	Two tiny tracefiles to help you get started. 
+# Little C programs that are called by the trace files
+myspin.c	# Takes argument <n> and spins for <n> seconds
+mysplit.c	# Forks a child that spins for <n> seconds
+mystop.c        # Spins for <n> seconds and sends SIGTSTP to itself
+myint.c         # Spins for <n> seconds and sends SIGINT to itself
 
-Makefile	
-	Builds the driver
-
-**********************************
-Other support files for the driver
-**********************************
-
-config.h	Configures the malloc lab driver
-fsecs.{c,h}	Wrapper function for the different timer packages
-clock.{c,h}	Routines for accessing the Pentium and Alpha cycle counters
-fcyc.{c,h}	Timer functions based on cycle counters
-ftimer.{c,h}	Timer functions based on interval timers and gettimeofday()
-memlib.{c,h}	Models the heap and sbrk function
-
-*******************************
-Building and running the driver
-*******************************
-To build the driver, type "make" to the shell.
-
-To run the driver on a tiny test trace:
-
-	unix> mdriver -V -f traces/short1-bal.rep
-
-The -V option prints out helpful tracing and summary information.
-
-To get a list of the driver flags:
-
-	unix> mdriver -h# ECE322Assignment5
