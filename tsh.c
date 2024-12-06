@@ -71,7 +71,7 @@ void sigint_handler(int sig);
 void execute_pipe(char *cmds[MAXPIPE][MAXARGS], int n);
 
 /* Here are helper routines that we've provided for you */
-int parseline(const char *cmdline, char **argv, char *cmds[MAXPIPE][MAXARGS]);
+int parseline(const char *cmdline, char **argv, char *cmds[MAXPIPE][MAXARGS]); //modified to work with pipes
 void sigquit_handler(int sig);
 
 void clearjob(struct job_t *job);
