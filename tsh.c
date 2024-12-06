@@ -21,6 +21,7 @@
 #define MAXARGS 128    /* max args on a command line */
 #define MAXJOBS 16     /* max jobs at any point in time */
 #define MAXJID 1 << 16 /* max job ID */
+#define MAXPIPE 16     /* max pipes */
 
 /* Job states */
 #define UNDEF 0 /* undefined */
@@ -66,8 +67,10 @@ void sigchld_handler(int sig);
 void sigtstp_handler(int sig);
 void sigint_handler(int sig);
 
+void execute_pipe(char *cmds[MAXPIPE][MAXARGS], int n);
+
 /* Here are helper routines that we've provided for you */
-int parseline(const char *cmdline, char **argv);
+int parseline(const char *cmdline, char **argv, char *cmds[MAXPIPE][MAXARGS]);
 void sigquit_handler(int sig);
 
 void clearjob(struct job_t *job);
@@ -165,41 +168,38 @@ int main(int argc, char **argv) {
  * when we type ctrl-c (ctrl-z) at the keyboard.
  */
 void eval(char *cmdline) {
+    char *argv[MAXARGS];
+    char *cmds[MAXPIPE][MAXARGS];
+    int bg;
 
-  char *argv[MAXLINE];
-  char buffer[MAXLINE];
-  int bg;
-  pid_t pid;
-  int len = strlen(cmdline) - 1; // strip the '\n' from the string
-  strcpy(buffer, cmdline);
-  bg = parseline(
-      buffer,
-      argv); // populate argv array and check if needs to run in background
-  if (argv[0] == NULL)
-    return; // ignore empty line
+    bg = parseline(cmdline, argv, cmds);
 
-  if (!builtin_cmd(argv)) {    // check if a built in command
-    if ((pid = fork()) == 0) { // fork and execvp to run program
-      setpgid(0, 0);           // new process group and ID for child program
-      if (execvp(argv[0], argv) < 0) { // checks if child is successful and runs
-        int len = strlen(cmdline) - 1; // strip the '\n' from the string
-        printf("%.*s", len, cmdline);
-        app_error(": Command not found"); // otherwise error
-      }
+    int num_cmds = 0;
+    while (cmds[num_cmds][0] != NULL)
+        num_cmds++;
+
+    if (num_cmds == 1) {
+        if (!builtin_cmd(argv)) {
+            pid_t pid;
+            if ((pid = fork()) == 0) {
+                setpgid(0, 0);
+                if (execvp(argv[0], argv) < 0) {
+                    perror(argv[0]);
+                    exit(0);
+                }
+            }
+            if (!bg) {
+                waitfg(pid);
+            } else {
+                addjob(jobs, pid, BG, cmdline);
+                printf("[%d] (%d) %s", pid2jid(pid), pid, cmdline);
+            }
+        }
+    } else {
+        execute_pipe(cmds, num_cmds);
     }
-    if (!bg) {
-      int status;
-      if (waitpid(pid, &status, 0) < 0) {
-        app_error("waitpid error");
-      }
-    } else { // add job and print out
-      addjob(jobs, pid, BG, cmdline);
-      printf("[%d] (%d) %s", pid2jid(pid), pid, cmdline);
-    }
-  }
-
-  return;
 }
+
 
 /*
  * parseline - Parse the command line and build the argv array.
@@ -208,52 +208,108 @@ void eval(char *cmdline) {
  * argument.  Return true if the user has requested a BG job, false if
  * the user has requested a FG job.
  */
-int parseline(const char *cmdline, char **argv) {
-  static char array[MAXLINE]; /* holds local copy of command line */
-  char *buf = array;          /* ptr that traverses command line */
-  char *delim;                /* points to first space delimiter */
-  int argc;                   /* number of args */
-  int bg;                     /* background job? */
 
-  strcpy(buf, cmdline);
-  buf[strlen(buf) - 1] = ' ';   /* replace trailing '\n' with space */
-  while (*buf && (*buf == ' ')) /* ignore leading spaces */
-    buf++;
+int parseline(const char *cmdline, char **argv, char *cmds[MAXPIPE][MAXARGS]) {
+    static char array[MAXLINE]; // holds local copy of command line
+    char *buf = array;          // ptr that traverses command line
+    char *delim;                // points to first space delimiter
+    int argc = 0;               // number of args, initialized to avoid uninitialized use
+    int bg;                     // background job?
+    int pipe_count = 0;         // number of pipes
 
-  /* Build the argv list */
-  argc = 0;
-  if (*buf == '\'') {
-    buf++;
-    delim = strchr(buf, '\'');
-  } else {
-    delim = strchr(buf, ' ');
-  }
+    strcpy(buf, cmdline);
+    buf[strlen(buf) - 1] = ' ';  // replace trailing '\n' with space
+    while (*buf && (*buf == ' ')) // ignore leading spaces
+        buf++;
 
-  while (delim) {
-    argv[argc++] = buf;
-    *delim = '\0';
-    buf = delim + 1;
-    while (*buf && (*buf == ' ')) /* ignore spaces */
-      buf++;
+    while (pipe_count < MAXPIPE) {
+        cmds[pipe_count][0] = NULL;
+        char *cmd = strtok_r(buf, "|", &buf);
+        if (!cmd)
+            break;
 
-    if (*buf == '\'') {
-      buf++;
-      delim = strchr(buf, '\'');
-    } else {
-      delim = strchr(buf, ' ');
+        /* Build the argv list */
+        argc = 0; // re-initialize argc for each command
+        while (*cmd && (*cmd == ' ')) // ignore leading spaces
+            cmd++;
+        if (*cmd == '\'') {
+            cmd++;
+            delim = strchr(cmd, '\'');
+        } else {
+            delim = strchr(cmd, ' ');
+        }
+
+        while (delim) {
+            argv[argc++] = cmd;
+            *delim = '\0';
+            cmd = delim + 1;
+            while (*cmd && (*cmd == ' ')) // ignore spaces
+                cmd++;
+            if (*cmd == '\'') {
+                cmd++;
+                delim = strchr(cmd, '\'');
+            } else {
+                delim = strchr(cmd, ' ');
+            }
+        }
+        argv[argc] = NULL;
+        memcpy(cmds[pipe_count], argv, argc * sizeof(char *)); // use argc for length
+        pipe_count++;
     }
-  }
-  argv[argc] = NULL;
 
-  if (argc == 0) /* ignore blank line */
-    return 1;
+    if (argc == 0) /* ignore blank line */
+        return 1;
 
-  /* should the job run in the background? */
-  if ((bg = (*argv[argc - 1] == '&')) != 0) {
-    argv[--argc] = NULL;
-  }
-  return bg;
+    /* should the job run in the background? */
+    if ((bg = (*argv[argc - 1] == '&')) != 0) {
+        argv[--argc] = NULL;
+    }
+    return bg;
 }
+
+
+void execute_pipe(char *cmds[MAXPIPE][MAXARGS], int n) {
+    int i;
+    int fds[MAXPIPE][2];
+    pid_t pid;
+
+    for (i = 0; i < n - 1; i++) {
+        pipe(fds[i]);
+    }
+
+    for (i = 0; i < n; i++) {
+        if ((pid = fork()) == 0) {
+            if (i > 0) {
+                dup2(fds[i - 1][0], 0);
+                close(fds[i - 1][0]);
+                close(fds[i - 1][1]);
+            }
+            if (i < n - 1) {
+                close(fds[i][0]);
+                dup2(fds[i][1], 1);
+                close(fds[i][1]);
+            }
+            for (int j = 0; j < n - 1; j++) {
+                close(fds[j][0]);
+                close(fds[j][1]);
+            }
+            execvp(cmds[i][0], cmds[i]);
+            perror("execvp");
+            exit(1);
+        }
+    }
+
+    for (i = 0; i < n - 1; i++) {
+        close(fds[i][0]);
+        close(fds[i][1]);
+    }
+
+    for (i = 0; i < n; i++) {
+        wait(NULL);
+    }
+}
+
+
 
 /*
  * builtin_cmd - If the user has typed a built-in command then execute
