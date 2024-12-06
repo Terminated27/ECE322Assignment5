@@ -752,13 +752,13 @@ void sigquit_handler(int sig) {
 }
 
 void redirect_input(const char *input_file) {
-    int fd = open(input_file, O_RDONLY);
+    int fd = open(input_file, O_RDONLY); // opens file, read only
     if (fd < 0) {
-        perror("open");
+        perror("open"); // program exits with error status
         exit(EXIT_FAILURE);
     }
     if (dup2(fd, STDIN_FILENO) < 0) {
-        perror("dup2");
+        perror("dup2"); // program exits with error status
         exit(EXIT_FAILURE);
     }
     close(fd);
@@ -767,30 +767,33 @@ void redirect_input(const char *input_file) {
 void redirect_output(const char *output_file, int append) {
     int fd;
     if (append) {
+        // open file on write only, create if it doesn't exist, append to the end
         fd = open(output_file, O_WRONLY | O_CREAT | O_APPEND, S_IRWXU | S_IRWXG | S_IRWXO);
     } else {
+        // open file on write only, create if it doesn't exist, truncate to 0 length
         fd = open(output_file, O_WRONLY | O_CREAT | O_TRUNC, S_IRWXU | S_IRWXG | S_IRWXO);
     }
     if (fd < 0) {
         perror("open");
-        exit(EXIT_FAILURE);
+        exit(EXIT_FAILURE); // exits with failure
     }
     if (dup2(fd, STDOUT_FILENO) < 0) {
-        perror("dup2");
+        perror("dup2"); // program exits with error status
         exit(EXIT_FAILURE);
     }
     close(fd);
 }
 
 void redirect_error(const char *error_file) {
+  // open file on write only, create if it doesn't exist, truncate to 0 length
     int fd = open(error_file, O_WRONLY | O_CREAT | O_TRUNC, S_IRWXU | S_IRWXG | S_IRWXO);
     if (fd < 0) {
         perror("open");
-        exit(EXIT_FAILURE);
+        exit(EXIT_FAILURE); // exits with error
     }
     if (dup2(fd, STDERR_FILENO) < 0) {
         perror("dup2");
-        exit(EXIT_FAILURE);
+        exit(EXIT_FAILURE); // exits with error
     }
     close(fd);
 }
