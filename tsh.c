@@ -168,38 +168,37 @@ int main(int argc, char **argv) {
  * when we type ctrl-c (ctrl-z) at the keyboard.
  */
 void eval(char *cmdline) {
-    char *argv[MAXARGS];
-    char *cmds[MAXPIPE][MAXARGS];
-    int bg;
+  char *argv[MAXARGS];
+  char *cmds[MAXPIPE][MAXARGS]; // Array to hold commands for piping
+  int bg;
 
-    bg = parseline(cmdline, argv, cmds);
+  bg = parseline(cmdline, argv, cmds); // parse cmd
 
-    int num_cmds = 0;
-    while (cmds[num_cmds][0] != NULL)
-        num_cmds++;
+  int num_cmds = 0;
+  while (cmds[num_cmds][0] != NULL)
+    num_cmds++;
 
-    if (num_cmds == 1) {
-        if (!builtin_cmd(argv)) {
-            pid_t pid;
-            if ((pid = fork()) == 0) {
-                setpgid(0, 0);
-                if (execvp(argv[0], argv) < 0) {
-                    perror(argv[0]);
-                    exit(0);
-                }
-            }
-            if (!bg) {
-                waitfg(pid);
-            } else {
-                addjob(jobs, pid, BG, cmdline);
-                printf("[%d] (%d) %s", pid2jid(pid), pid, cmdline);
-            }
+  if (num_cmds == 1) { // if only 1 cmd, handle normal
+    if (!builtin_cmd(argv)) {
+      pid_t pid;
+      if ((pid = fork()) == 0) {
+        setpgid(0, 0);
+        if (execvp(argv[0], argv) < 0) {
+          perror(argv[0]);
+          exit(0);
         }
-    } else {
-        execute_pipe(cmds, num_cmds);
+      }
+      if (!bg) {
+        waitfg(pid);
+      } else {
+        addjob(jobs, pid, BG, cmdline);
+        printf("[%d] (%d) %s", pid2jid(pid), pid, cmdline);
+      }
     }
+  } else { // redirect to piping function if >1 cmd
+    execute_pipe(cmds, num_cmds);
+  }
 }
-
 
 /*
  * parseline - Parse the command line and build the argv array.
@@ -210,106 +209,110 @@ void eval(char *cmdline) {
  */
 
 int parseline(const char *cmdline, char **argv, char *cmds[MAXPIPE][MAXARGS]) {
-    static char array[MAXLINE]; // holds local copy of command line
-    char *buf = array;          // ptr that traverses command line
-    char *delim;                // points to first space delimiter
-    int argc = 0;               // number of args, initialized to avoid uninitialized use
-    int bg;                     // background job?
-    int pipe_count = 0;         // number of pipes
+  static char array[MAXLINE]; // copy of command line
+  char *buf = array;          // ptr for command line
+  char *delim;                // first space delimiter
+  int argc = 0;               // number of args
+  int bg;                     // background job?
+  int pipe_count = 0;         // number of pipes
 
-    strcpy(buf, cmdline);
-    buf[strlen(buf) - 1] = ' ';  // replace trailing '\n' with space
-    while (*buf && (*buf == ' ')) // ignore leading spaces
-        buf++;
+  strcpy(buf, cmdline);
+  buf[strlen(buf) - 1] = ' ';   // replace trailing '\n' with space
+  while (*buf && (*buf == ' ')) // ignore leading spaces
+    buf++;
 
-    while (pipe_count < MAXPIPE) {
-        cmds[pipe_count][0] = NULL;
-        char *cmd = strtok_r(buf, "|", &buf);
-        if (!cmd)
-            break;
+  while (pipe_count < MAXPIPE) { // make sure not too many pipes
+    cmds[pipe_count][0] = NULL;
+    char *cmd = strtok_r(buf, "|", &buf); // split into buf
+    if (!cmd)
+      break;
 
-        /* Build the argv list */
-        argc = 0; // re-initialize argc for each command
-        while (*cmd && (*cmd == ' ')) // ignore leading spaces
-            cmd++;
-        if (*cmd == '\'') {
-            cmd++;
-            delim = strchr(cmd, '\'');
-        } else {
-            delim = strchr(cmd, ' ');
-        }
-
-        while (delim) {
-            argv[argc++] = cmd;
-            *delim = '\0';
-            cmd = delim + 1;
-            while (*cmd && (*cmd == ' ')) // ignore spaces
-                cmd++;
-            if (*cmd == '\'') {
-                cmd++;
-                delim = strchr(cmd, '\'');
-            } else {
-                delim = strchr(cmd, ' ');
-            }
-        }
-        argv[argc] = NULL;
-        memcpy(cmds[pipe_count], argv, argc * sizeof(char *)); // use argc for length
-        pipe_count++;
+    /* Build the argv list */
+    argc = 0;                     // reset argc for each command
+    while (*cmd && (*cmd == ' ')) // ignore leading spaces
+      cmd++;
+    if (*cmd == '\'') {
+      cmd++;
+      delim = strchr(cmd, '\'');
+    } else {
+      delim = strchr(cmd, ' ');
     }
 
-    if (argc == 0) /* ignore blank line */
-        return 1;
-
-    /* should the job run in the background? */
-    if ((bg = (*argv[argc - 1] == '&')) != 0) {
-        argv[--argc] = NULL;
+    while (delim) {
+      argv[argc++] = cmd;
+      *delim = '\0';
+      cmd = delim + 1;
+      while (*cmd && (*cmd == ' ')) // ignore spaces
+        cmd++;
+      if (*cmd == '\'') {
+        cmd++;
+        delim = strchr(cmd, '\'');
+      } else {
+        delim = strchr(cmd, ' ');
+      }
     }
-    return bg;
+    argv[argc] = NULL;                                     // null termination
+    memcpy(cmds[pipe_count], argv, argc * sizeof(char *)); // copy array to cmds
+    pipe_count++;
+  }
+
+  if (argc == 0) /* ignore blank line */
+    return 1;
+
+  /* should the job run in the background? */
+  if ((bg = (*argv[argc - 1] == '&')) != 0) {
+    argv[--argc] = NULL;
+  }
+  return bg;
 }
 
-
+/* 
+ * execute_pipe - Execute a series of piped commands
+ * cmds: An array of commands and their arguments
+ * n: The number of commands in the pipes
+ */
 void execute_pipe(char *cmds[MAXPIPE][MAXARGS], int n) {
-    int i;
-    int fds[MAXPIPE][2];
-    pid_t pid;
+  int i;
+  int fds[MAXPIPE][2]; // array for file descriptors
+  pid_t pid;
 
-    for (i = 0; i < n - 1; i++) {
-        pipe(fds[i]);
-    }
+  for (i = 0; i < n - 1; i++) { // create the pipes with file descriptors
+    pipe(fds[i]);
+  }
 
-    for (i = 0; i < n; i++) {
-        if ((pid = fork()) == 0) {
-            if (i > 0) {
-                dup2(fds[i - 1][0], 0);
-                close(fds[i - 1][0]);
-                close(fds[i - 1][1]);
-            }
-            if (i < n - 1) {
-                close(fds[i][0]);
-                dup2(fds[i][1], 1);
-                close(fds[i][1]);
-            }
-            for (int j = 0; j < n - 1; j++) {
-                close(fds[j][0]);
-                close(fds[j][1]);
-            }
-            execvp(cmds[i][0], cmds[i]);
-            perror("execvp");
-            exit(1);
-        }
-    }
-
-    for (i = 0; i < n - 1; i++) {
+  for (i = 0; i < n; i++) { // run through each command to fork and pipe
+    if ((pid = fork()) == 0) {
+      if (i > 0) { // If not the first command, redirect stdin to the previous
+                   // pipe's read end
+        dup2(fds[i - 1][0], 0);
+        close(fds[i - 1][0]);
+        close(fds[i - 1][1]);
+      }
+      if (i < n - 1) { // If not the last command, redirect stdin to the
+                       // previous pipe's write end
         close(fds[i][0]);
+        dup2(fds[i][1], 1);
         close(fds[i][1]);
+      }
+      for (int j = 0; j < n - 1; j++) { // close everything up
+        close(fds[j][0]);
+        close(fds[j][1]);
+      }
+      execvp(cmds[i][0], cmds[i]); // exec cmd
+      app_error("execvp");
+      exit(1);
     }
+  }
 
-    for (i = 0; i < n; i++) {
-        wait(NULL);
-    }
+  for (i = 0; i < n - 1; i++) { // close all pipes
+    close(fds[i][0]);
+    close(fds[i][1]);
+  }
+
+  for (i = 0; i < n; i++) { // wait for everything to finish
+    wait(NULL);
+  }
 }
-
-
 
 /*
  * builtin_cmd - If the user has typed a built-in command then execute
