@@ -1,7 +1,7 @@
 /*
  * tsh - A tiny shell program with job control
  *
- * <Aidan Chin 33803321 & Luke Rattanavijai>
+ * <Aidan Chin 33803321 & Luke Rattanavijai 33714609>
  */
 
 // test test
@@ -15,6 +15,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 /* Misc manifest constants */
 #define MAXLINE 1024   /* max line size */
@@ -89,6 +90,10 @@ void unix_error(char *msg);
 void app_error(char *msg);
 typedef void handler_t(int);
 handler_t *Signal(int signum, handler_t *handler);
+
+void redirect_input(const char *input_file);
+void redirect_output(const char *output_file, int append);
+void redirect_error(const char *error_file);
 
 /*
  * main - The shell's main routine
@@ -168,36 +173,94 @@ int main(int argc, char **argv) {
  * when we type ctrl-c (ctrl-z) at the keyboard.
  */
 void eval(char *cmdline) {
-  char *argv[MAXARGS];
-  char *cmds[MAXPIPE][MAXARGS]; // Array to hold commands for piping
-  int bg;
+    char *argv[MAXARGS]; // Argument list execve()
+    char buf[MAXLINE]; // Holds modified command line
+    char *cmds[MAXPIPE][MAXARGS]; // Commands for pipes
+    int bg; // Should the job run in bg or fg?
+    pid_t pid; // Process id
+    int in_fd = -1, out_fd = -1, err_fd = -1; // File descriptors for redirection
+    int append = 0; // Append flag for output redirection
+    int pipefd[2]; // File descriptors for pipe
+    int pipe_present = 0; // Flag to check if pipe is present
 
-  bg = parseline(cmdline, argv, cmds); // parse cmd
+    strcpy(buf, cmdline);
+    bg = parseline(buf, argv, cmds);
 
-  int num_cmds = 0;
-  while (cmds[num_cmds][0] != NULL)
-    num_cmds++;
+    int num_cmds = 0;
+    while (cmds[num_cmds][0] != NULL)
+        num_cmds++;
 
-  if (num_cmds == 1) { // if only 1 cmd, handle normal
-    if (!builtin_cmd(argv)) {
-      pid_t pid;
-      if ((pid = fork()) == 0) {
-        setpgid(0, 0);
-        if (execvp(argv[0], argv) < 0) {
-          perror(argv[0]);
-          exit(0);
+    if (num_cmds == 1) {
+        // Check for redirection operators
+        for (int i = 0; argv[i] != NULL; i++) {
+            if (strcmp(argv[i], "<") == 0) {
+                in_fd = open(argv[i + 1], O_RDONLY);
+                if (in_fd < 0) {
+                    perror("open");
+                    return;
+                }
+                argv[i] = NULL;
+            } else if (strcmp(argv[i], ">") == 0) {
+                out_fd = open(argv[i + 1], O_WRONLY | O_CREAT | O_TRUNC, S_IRWXU | S_IRWXG | S_IRWXO);
+                if (out_fd < 0) {
+                    perror("open");
+                    return;
+                }
+                argv[i] = NULL;
+            } else if (strcmp(argv[i], ">>") == 0) {
+                out_fd = open(argv[i + 1], O_WRONLY | O_CREAT | O_APPEND, S_IRWXU | S_IRWXG | S_IRWXO);
+                if (out_fd < 0) {
+                    perror("open");
+                    return;
+                }
+                argv[i] = NULL;
+            } else if (strcmp(argv[i], "2>") == 0) {
+                err_fd = open(argv[i + 1], O_WRONLY | O_CREAT | O_TRUNC, S_IRWXU | S_IRWXG | S_IRWXO);
+                if (err_fd < 0) {
+                    perror("open");
+                    return;
+                }
+                argv[i] = NULL;
+            }
         }
-      }
-      if (!bg) {
-        waitfg(pid);
-      } else {
-        addjob(jobs, pid, BG, cmdline);
-        printf("[%d] (%d) %s", pid2jid(pid), pid, cmdline);
-      }
+
+        if (!builtin_cmd(argv)) {
+            if ((pid = fork()) == 0) { // Child process
+                setpgid(0, 0);
+
+                // Handle input redirection
+                if (in_fd != -1) {
+                    dup2(in_fd, STDIN_FILENO);
+                    close(in_fd);
+                }
+
+                // Handle output redirection
+                if (out_fd != -1) {
+                    dup2(out_fd, STDOUT_FILENO);
+                    close(out_fd);
+                }
+
+                // Handle error redirection
+                if (err_fd != -1) {
+                    dup2(err_fd, STDERR_FILENO);
+                    close(err_fd);
+                }
+
+                if (execvp(argv[0], argv) < 0) {
+                    perror(argv[0]);
+                    exit(0);
+                }
+            }
+            if (!bg) {
+                waitfg(pid);
+            } else {
+                addjob(jobs, pid, BG, cmdline);
+                printf("[%d] (%d) %s", pid2jid(pid), pid, cmdline);
+            }
+        }
+    } else {
+        execute_pipe(cmds, num_cmds);
     }
-  } else { // redirect to piping function if >1 cmd
-    execute_pipe(cmds, num_cmds);
-  }
 }
 
 /*
@@ -686,4 +749,48 @@ handler_t *Signal(int signum, handler_t *handler) {
 void sigquit_handler(int sig) {
   printf("Terminating after receipt of SIGQUIT signal\n");
   exit(1);
+}
+
+void redirect_input(const char *input_file) {
+    int fd = open(input_file, O_RDONLY);
+    if (fd < 0) {
+        perror("open");
+        exit(EXIT_FAILURE);
+    }
+    if (dup2(fd, STDIN_FILENO) < 0) {
+        perror("dup2");
+        exit(EXIT_FAILURE);
+    }
+    close(fd);
+}
+
+void redirect_output(const char *output_file, int append) {
+    int fd;
+    if (append) {
+        fd = open(output_file, O_WRONLY | O_CREAT | O_APPEND, S_IRWXU | S_IRWXG | S_IRWXO);
+    } else {
+        fd = open(output_file, O_WRONLY | O_CREAT | O_TRUNC, S_IRWXU | S_IRWXG | S_IRWXO);
+    }
+    if (fd < 0) {
+        perror("open");
+        exit(EXIT_FAILURE);
+    }
+    if (dup2(fd, STDOUT_FILENO) < 0) {
+        perror("dup2");
+        exit(EXIT_FAILURE);
+    }
+    close(fd);
+}
+
+void redirect_error(const char *error_file) {
+    int fd = open(error_file, O_WRONLY | O_CREAT | O_TRUNC, S_IRWXU | S_IRWXG | S_IRWXO);
+    if (fd < 0) {
+        perror("open");
+        exit(EXIT_FAILURE);
+    }
+    if (dup2(fd, STDERR_FILENO) < 0) {
+        perror("dup2");
+        exit(EXIT_FAILURE);
+    }
+    close(fd);
 }
